@@ -49,63 +49,116 @@ class WPUserCleanerUsers {
         
         foreach ($users as $user) {
             $is_inactive = true;
+            $reasons = array(); // For debugging
             
             // Check if user has posts
             if ($args['check_posts']) {
                 $post_count = count_user_posts($user->ID);
                 if ($post_count > 0) {
                     $is_inactive = false;
+                    $reasons[] = "Has {$post_count} posts";
                 }
             }
             
             // Check if user has WooCommerce orders
-            if ($is_inactive && $args['check_orders'] && function_exists('wc_get_orders')) {
-                // Try multiple methods to check for orders
+            if ($is_inactive && $args['check_orders'] && class_exists('WooCommerce')) {
                 $has_orders = false;
+                $order_check_details = array();
                 
-                // Method 1: Use wc_get_orders with customer ID
-                $orders = wc_get_orders(array(
-                    'customer_id' => $user->ID,
-                    'limit' => 1,
-                    'status' => 'any',
-                    'return' => 'ids'
-                ));
+                // Method 1: Check using WooCommerce customer data store
+                if (function_exists('wc_get_customer_order_count')) {
+                    $order_count = wc_get_customer_order_count($user->ID);
+                    $order_check_details[] = "wc_get_customer_order_count: {$order_count}";
+                    if ($order_count > 0) {
+                        $has_orders = true;
+                        $reasons[] = "Has {$order_count} orders (via wc_get_customer_order_count)";
+                    }
+                }
                 
-                if (!empty($orders)) {
-                    $has_orders = true;
-                } else {
-                    // Method 2: Check by customer email if customer_id didn't work
-                    $orders_by_email = wc_get_orders(array(
-                        'billing_email' => $user->user_email,
+                // Method 2: Direct database query for both user ID and email
+                if (!$has_orders) {
+                    global $wpdb;
+                    
+                    // Check by user ID (_customer_user meta)
+                    $order_count_by_id = $wpdb->get_var($wpdb->prepare("
+                        SELECT COUNT(DISTINCT p.ID)
+                        FROM {$wpdb->posts} p
+                        INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                        WHERE p.post_type = 'shop_order'
+                        AND p.post_status NOT IN ('auto-draft', 'trash')
+                        AND pm.meta_key = '_customer_user'
+                        AND pm.meta_value = %d
+                        AND pm.meta_value != '0'
+                    ", $user->ID));
+                    
+                    $order_check_details[] = "DB query by user ID: {$order_count_by_id}";
+                    
+                    if ($order_count_by_id > 0) {
+                        $has_orders = true;
+                        $reasons[] = "Has {$order_count_by_id} orders (via database user ID)";
+                    } else {
+                        // Check by email (_billing_email meta for guest orders)
+                        $order_count_by_email = $wpdb->get_var($wpdb->prepare("
+                            SELECT COUNT(DISTINCT p.ID)
+                            FROM {$wpdb->posts} p
+                            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                            WHERE p.post_type = 'shop_order'
+                            AND p.post_status NOT IN ('auto-draft', 'trash')
+                            AND pm.meta_key = '_billing_email'
+                            AND pm.meta_value = %s
+                        ", $user->user_email));
+                        
+                        $order_check_details[] = "DB query by email: {$order_count_by_email}";
+                        
+                        if ($order_count_by_email > 0) {
+                            $has_orders = true;
+                            $reasons[] = "Has {$order_count_by_email} orders (via database email)";
+                        }
+                    }
+                }
+                
+                // Method 3: Fallback using wc_get_orders if previous methods failed
+                if (!$has_orders && function_exists('wc_get_orders')) {
+                    // Try with customer ID first
+                    $orders_by_id = wc_get_orders(array(
+                        'customer_id' => $user->ID,
                         'limit' => 1,
                         'status' => 'any',
                         'return' => 'ids'
                     ));
                     
-                    if (!empty($orders_by_email)) {
+                    $order_check_details[] = "wc_get_orders by ID: " . count($orders_by_id);
+                    
+                    if (!empty($orders_by_id)) {
                         $has_orders = true;
+                        $reasons[] = "Has orders (via wc_get_orders customer ID)";
                     } else {
-                        // Method 3: Direct database query as fallback
-                        global $wpdb;
-                        $order_count = $wpdb->get_var($wpdb->prepare("
-                            SELECT COUNT(*)
-                            FROM {$wpdb->posts} p
-                            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-                            WHERE p.post_type IN ('shop_order', 'woocommerce_order')
-                            AND p.post_status IN ('wc-pending', 'wc-processing', 'wc-on-hold', 'wc-completed', 'wc-cancelled', 'wc-refunded', 'wc-failed')
-                            AND pm.meta_key = '_customer_user'
-                            AND pm.meta_value = %d
-                        ", $user->ID));
+                        // Try with billing email
+                        $orders_by_email = wc_get_orders(array(
+                            'billing_email' => $user->user_email,
+                            'limit' => 1,
+                            'status' => 'any',
+                            'return' => 'ids'
+                        ));
                         
-                        if ($order_count > 0) {
+                        $order_check_details[] = "wc_get_orders by email: " . count($orders_by_email);
+                        
+                        if (!empty($orders_by_email)) {
                             $has_orders = true;
+                            $reasons[] = "Has orders (via wc_get_orders email)";
                         }
                     }
                 }
                 
+                $reasons[] = "Order check: " . implode('; ', $order_check_details);
+                
                 if ($has_orders) {
                     $is_inactive = false;
                 }
+            } elseif ($args['check_orders'] && !class_exists('WooCommerce')) {
+                $reasons[] = "WooCommerce not active - skipping order check";
+            } elseif (!$args['check_orders']) {
+                $reasons[] = "Order checking disabled in settings";
             }
             
             if ($is_inactive) {
@@ -128,7 +181,12 @@ class WPUserCleanerUsers {
                         'user_email' => $user->user_email,
                         'display_name' => $user->display_name,
                         'user_registered' => $user->user_registered,
-                        'roles' => $user->roles
+                        'roles' => $user->roles,
+                        'debug_info' => array(
+                            'check_orders' => $args['check_orders'],
+                            'woocommerce_active' => class_exists('WooCommerce'),
+                            'reasons' => $reasons
+                        )
                     );
                 }
             }
@@ -221,9 +279,12 @@ class WPUserCleanerUsers {
         $sort_by = isset($_POST['sort_by']) ? sanitize_text_field($_POST['sort_by']) : 'registered';
         $sort_order = isset($_POST['sort_order']) ? sanitize_text_field($_POST['sort_order']) : 'DESC';
         
+        // Default to checking orders if WooCommerce is active, unless specifically disabled
+        $default_check_orders = class_exists('WooCommerce') ? true : false;
+        
         $args = array(
-            'check_orders' => isset($settings['delete_users_without_orders']) ? $settings['delete_users_without_orders'] : true,
-            'check_posts' => isset($settings['delete_users_without_posts']) ? $settings['delete_users_without_posts'] : true,
+            'check_orders' => isset($settings['delete_users_without_orders']) ? $settings['delete_users_without_orders'] : $default_check_orders,
+            'check_posts' => isset($settings['delete_users_without_posts']) ? $settings['delete_users_without_posts'] : false,
             'exclude_roles' => isset($settings['exclude_roles']) ? $settings['exclude_roles'] : array('administrator', 'editor', 'author'),
             'sort_by' => $sort_by,
             'sort_order' => $sort_order,
