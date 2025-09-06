@@ -3,7 +3,7 @@
  * Plugin Name: WP User Cleaner
  * Plugin URI: https://github.com/fransiscuss/wp-user-cleaner
  * Description: Clean and delete spam users without orders/posts and manage comment spam in WordPress and WooCommerce.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Fransiscus Setiawan
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('WP_USER_CLEANER_VERSION', '1.0.0');
+define('WP_USER_CLEANER_VERSION', '1.1.0');
 define('WP_USER_CLEANER_PATH', plugin_dir_path(__FILE__));
 define('WP_USER_CLEANER_URL', plugin_dir_url(__FILE__));
 
@@ -110,7 +110,9 @@ class WPUserCleaner {
             'delete_users_without_posts' => false,
             'exclude_roles' => array('administrator', 'editor', 'author'),
             'auto_spam_comments' => false,
-            'delete_spam_comments_days' => 30
+            'delete_spam_comments_days' => 30,
+            'suspicious_domain_keywords' => 'tempmail,10minutemail,guerrillamail,mailinator,throwaway',
+            'excluded_domains' => 'members.ebay.com,kogan.com.au,members.ebay.com.au,amazon.com.au,gmail.com,yahoo.com,hotmail.com,outlook.com'
         ));
     }
     
