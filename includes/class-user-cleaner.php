@@ -24,194 +24,56 @@ class WPUserCleanerUsers {
     }
     
     /**
-     * Get users without orders or posts
+     * Get users without orders or posts using direct SQL query
      */
     public function get_inactive_users($args = array()) {
+        global $wpdb;
+        
         $defaults = array(
-            'exclude_roles' => array('administrator', 'editor', 'author'),
-            'check_orders' => true,
-            'check_posts' => true,
-            'limit' => -1,
             'sort_by' => 'registered',
-            'sort_order' => 'DESC'
+            'sort_order' => 'ASC'
         );
         
         $args = wp_parse_args($args, $defaults);
         
-        $user_query_args = array(
-            'fields' => 'all',
-            'number' => $args['limit'],
-            'role__not_in' => $args['exclude_roles']
-        );
+        // Use the provided SQL query to find users without orders and posts
+        $sql = "SELECT U.ID, U.user_login, U.user_email, U.display_name, U.user_registered
+                FROM {$wpdb->users} AS U
+                JOIN {$wpdb->usermeta} AS UM ON U.ID = UM.user_id
+                LEFT JOIN {$wpdb->postmeta} AS PM ON U.ID = PM.meta_value AND PM.meta_key = '_customer_user'
+                LEFT JOIN {$wpdb->posts} AS P ON U.ID = P.post_author
+                WHERE UM.meta_key = '{$wpdb->prefix}capabilities'
+                AND UM.meta_value LIKE '%subscriber%'
+                AND PM.meta_value IS NULL
+                AND P.post_author IS NULL
+                GROUP BY U.ID";
         
-        $users = get_users($user_query_args);
-        $inactive_users = array();
-        
-        foreach ($users as $user) {
-            $is_inactive = true;
-            $reasons = array(); // For debugging
-            
-            // Check if user has posts
-            if ($args['check_posts']) {
-                $post_count = count_user_posts($user->ID);
-                if ($post_count > 0) {
-                    $is_inactive = false;
-                    $reasons[] = "Has {$post_count} posts";
-                }
-            }
-            
-            // Check if user has WooCommerce orders
-            if ($is_inactive && $args['check_orders'] && class_exists('WooCommerce')) {
-                $has_orders = false;
-                $order_check_details = array();
-                
-                // Method 1: Check using WooCommerce customer data store
-                if (function_exists('wc_get_customer_order_count')) {
-                    $order_count = wc_get_customer_order_count($user->ID);
-                    $order_check_details[] = "wc_get_customer_order_count: {$order_count}";
-                    if ($order_count > 0) {
-                        $has_orders = true;
-                        $reasons[] = "Has {$order_count} orders (via wc_get_customer_order_count)";
-                    }
-                }
-                
-                // Method 2: Direct database query for both user ID and email
-                if (!$has_orders) {
-                    global $wpdb;
-                    
-                    // Check by user ID (_customer_user meta)
-                    $order_count_by_id = $wpdb->get_var($wpdb->prepare("
-                        SELECT COUNT(DISTINCT p.ID)
-                        FROM {$wpdb->posts} p
-                        INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-                        WHERE p.post_type = 'shop_order'
-                        AND p.post_status NOT IN ('auto-draft', 'trash')
-                        AND pm.meta_key = '_customer_user'
-                        AND pm.meta_value = %d
-                        AND pm.meta_value != '0'
-                    ", $user->ID));
-                    
-                    $order_check_details[] = "DB query by user ID: {$order_count_by_id}";
-                    
-                    if ($order_count_by_id > 0) {
-                        $has_orders = true;
-                        $reasons[] = "Has {$order_count_by_id} orders (via database user ID)";
-                    } else {
-                        // Check by email (_billing_email meta for guest orders)
-                        $order_count_by_email = $wpdb->get_var($wpdb->prepare("
-                            SELECT COUNT(DISTINCT p.ID)
-                            FROM {$wpdb->posts} p
-                            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-                            WHERE p.post_type = 'shop_order'
-                            AND p.post_status NOT IN ('auto-draft', 'trash')
-                            AND pm.meta_key = '_billing_email'
-                            AND pm.meta_value = %s
-                        ", $user->user_email));
-                        
-                        $order_check_details[] = "DB query by email: {$order_count_by_email}";
-                        
-                        if ($order_count_by_email > 0) {
-                            $has_orders = true;
-                            $reasons[] = "Has {$order_count_by_email} orders (via database email)";
-                        }
-                    }
-                }
-                
-                // Method 3: Fallback using wc_get_orders if previous methods failed
-                if (!$has_orders && function_exists('wc_get_orders')) {
-                    // Try with customer ID first
-                    $orders_by_id = wc_get_orders(array(
-                        'customer_id' => $user->ID,
-                        'limit' => 1,
-                        'status' => 'any',
-                        'return' => 'ids'
-                    ));
-                    
-                    $order_check_details[] = "wc_get_orders by ID: " . count($orders_by_id);
-                    
-                    if (!empty($orders_by_id)) {
-                        $has_orders = true;
-                        $reasons[] = "Has orders (via wc_get_orders customer ID)";
-                    } else {
-                        // Try with billing email
-                        $orders_by_email = wc_get_orders(array(
-                            'billing_email' => $user->user_email,
-                            'limit' => 1,
-                            'status' => 'any',
-                            'return' => 'ids'
-                        ));
-                        
-                        $order_check_details[] = "wc_get_orders by email: " . count($orders_by_email);
-                        
-                        if (!empty($orders_by_email)) {
-                            $has_orders = true;
-                            $reasons[] = "Has orders (via wc_get_orders email)";
-                        }
-                    }
-                }
-                
-                $reasons[] = "Order check: " . implode('; ', $order_check_details);
-                
-                if ($has_orders) {
-                    $is_inactive = false;
-                }
-            } elseif ($args['check_orders'] && !class_exists('WooCommerce')) {
-                $reasons[] = "WooCommerce not active - skipping order check";
-            } elseif (!$args['check_orders']) {
-                $reasons[] = "Order checking disabled in settings";
-            }
-            
-            if ($is_inactive) {
-                // Check if user should be excluded based on email domain
-                $exclude_user = false;
-                if (isset($args['excluded_domains']) && !empty($args['excluded_domains'])) {
-                    $excluded_domains = array_map('trim', explode(',', strtolower($args['excluded_domains'])));
-                    if (filter_var($user->user_email, FILTER_VALIDATE_EMAIL)) {
-                        $email_domain = strtolower(substr(strrchr($user->user_email, "@"), 1));
-                        if (in_array($email_domain, $excluded_domains)) {
-                            $exclude_user = true;
-                        }
-                    }
-                }
-                
-                if (!$exclude_user) {
-                    $inactive_users[] = array(
-                        'ID' => $user->ID,
-                        'user_login' => $user->user_login,
-                        'user_email' => $user->user_email,
-                        'display_name' => $user->display_name,
-                        'user_registered' => $user->user_registered,
-                        'roles' => $user->roles,
-                        'debug_info' => array(
-                            'check_orders' => $args['check_orders'],
-                            'woocommerce_active' => class_exists('WooCommerce'),
-                            'reasons' => $reasons
-                        )
-                    );
-                }
-            }
+        // Add sorting
+        if ($args['sort_by'] === 'registered') {
+            $sql .= " ORDER BY U.user_registered " . ($args['sort_order'] === 'DESC' ? 'DESC' : 'ASC');
+        } elseif ($args['sort_by'] === 'login') {
+            $sql .= " ORDER BY U.user_login " . ($args['sort_order'] === 'DESC' ? 'DESC' : 'ASC');
+        } elseif ($args['sort_by'] === 'email') {
+            $sql .= " ORDER BY U.user_email " . ($args['sort_order'] === 'DESC' ? 'DESC' : 'ASC');
         }
         
-        // Sort the users based on the specified criteria
-        if (!empty($inactive_users)) {
-            usort($inactive_users, function($a, $b) use ($args) {
-                $sort_by = $args['sort_by'];
-                $sort_order = strtoupper($args['sort_order']);
+        $results = $wpdb->get_results($sql, ARRAY_A);
+        
+        $inactive_users = array();
+        if ($results) {
+            foreach ($results as $user) {
+                // Get user roles
+                $user_roles = get_userdata($user['ID'])->roles;
                 
-                if ($sort_by === 'registered') {
-                    $date_a = strtotime($a['user_registered']);
-                    $date_b = strtotime($b['user_registered']);
-                    $result = $date_a - $date_b;
-                } elseif ($sort_by === 'login') {
-                    $result = strcmp($a['user_login'], $b['user_login']);
-                } elseif ($sort_by === 'email') {
-                    $result = strcmp($a['user_email'], $b['user_email']);
-                } else {
-                    $result = 0;
-                }
-                
-                return ($sort_order === 'DESC') ? -$result : $result;
-            });
+                $inactive_users[] = array(
+                    'ID' => $user['ID'],
+                    'user_login' => $user['user_login'],
+                    'user_email' => $user['user_email'],
+                    'display_name' => $user['display_name'],
+                    'user_registered' => $user['user_registered'],
+                    'roles' => $user_roles
+                );
+            }
         }
         
         return $inactive_users;
@@ -274,21 +136,12 @@ class WPUserCleanerUsers {
             wp_die(__('Insufficient permissions.', 'wp-user-cleaner'));
         }
         
-        $settings = get_option('wp_user_cleaner_settings', array());
-        
         $sort_by = isset($_POST['sort_by']) ? sanitize_text_field($_POST['sort_by']) : 'registered';
-        $sort_order = isset($_POST['sort_order']) ? sanitize_text_field($_POST['sort_order']) : 'DESC';
-        
-        // Default to checking orders if WooCommerce is active, unless specifically disabled
-        $default_check_orders = class_exists('WooCommerce') ? true : false;
+        $sort_order = isset($_POST['sort_order']) ? sanitize_text_field($_POST['sort_order']) : 'ASC';
         
         $args = array(
-            'check_orders' => isset($settings['delete_users_without_orders']) ? $settings['delete_users_without_orders'] : $default_check_orders,
-            'check_posts' => isset($settings['delete_users_without_posts']) ? $settings['delete_users_without_posts'] : false,
-            'exclude_roles' => isset($settings['exclude_roles']) ? $settings['exclude_roles'] : array('administrator', 'editor', 'author'),
             'sort_by' => $sort_by,
-            'sort_order' => $sort_order,
-            'excluded_domains' => isset($settings['excluded_domains']) ? $settings['excluded_domains'] : 'members.ebay.com,kogan.com.au,members.ebay.com.au,amazon.com.au'
+            'sort_order' => $sort_order
         );
         
         $inactive_users = $this->get_inactive_users($args);
