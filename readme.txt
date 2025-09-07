@@ -4,7 +4,7 @@ Tags: users, cleanup, spam, comments, woocommerce
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -88,12 +88,12 @@ Yes, all cleanup actions are logged in the Activity Log tab, providing a complet
 
 == Changelog ==
 
-= 1.2.0 =
-* Fixed critical WooCommerce order detection issue
-* Enhanced order detection with multiple fallback methods
-* Added comprehensive debug information for troubleshooting
-* Improved guest order detection via email matching
-* Better error handling for various WooCommerce configurations
+= 1.3.0 =
+* Simplified user detection with direct SQL query for better performance
+* Removed complex debugging features for cleaner functionality
+* Set default sorting to oldest first for better user experience
+* Streamlined codebase by removing unnecessary complexity
+* Focus on subscriber role users without orders or posts
 
 = 1.1.0 =
 * Updated plugin author to Fransiscus Setiawan
@@ -114,8 +114,8 @@ Yes, all cleanup actions are logged in the Activity Log tab, providing a complet
 
 == Upgrade Notice ==
 
-= 1.2.0 =
-Important update fixing critical WooCommerce order detection issues. Users with orders were incorrectly being marked for cleanup in previous versions.
+= 1.3.0 =
+Simplified and optimized user detection system. Plugin now uses direct SQL queries for better performance and cleaner codebase.
 
 = 1.1.0 =
 Enhanced user sorting and domain exclusion features. Better protection for legitimate user accounts.
